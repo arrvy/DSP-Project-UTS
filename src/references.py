@@ -15,6 +15,7 @@ Contoh jalankan langsung:
 """
 
 import os
+import importlib
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -25,12 +26,15 @@ __all__ = [
     "get_default_config",
     "generate_synthetic_signal",
     "load_wav_signal",
+    "load_audio_signal",
+    "compute_basic_operations",
     "analyze_signal",
     "run_full_analysis",
     "run_full_analysis_from_wav",
+    "run_full_analysis_from_audio",
 ]
 
-
+#! UBAH PARAMETER DI SINI
 def get_default_config():
     """Konfigurasi default agar gampang diubah dari luar modul."""
     return {
@@ -41,10 +45,13 @@ def get_default_config():
         "A_bass": 1.5,
         "A_treble": 0.8,
         "noise_std": 0.2,
-        "clip_level": 1.2,
+        #"clip_level": 1.2, DEFAULT
+        "clip_level": .5,
         "ma_window": 20,
         "threshold": 0.1,
-        "view_samples": 500,
+        "view_samples": 1000,
+        "time_view_strategy": "auto",
+        "view_start_sample": 0,
     }
 
 
@@ -104,9 +111,193 @@ def load_wav_signal(file_path):
     return fs_wav, t, data
 
 
+def load_audio_signal(file_path, target_fs=None):
+    """
+    Load audio umum (wav/mp3/aac/m4a/format lain yang didukung backend).
+
+    - Kalau WAV dan target_fs=None: pakai loader WAV cepat.
+    - Selain itu: pakai librosa agar format terkompresi bisa dibaca.
+    """
+    ext = os.path.splitext(file_path)[1].lower()
+
+    if ext == ".wav" and target_fs is None:
+        return load_wav_signal(file_path)
+
+    try:
+        librosa = importlib.import_module("librosa")
+    except ImportError as exc:
+        raise ImportError(
+            "Untuk file non-WAV (mis. mp3/aac), install dulu: pip install librosa audioread"
+        ) from exc
+
+    data, fs_audio = librosa.load(file_path, sr=target_fs, mono=True)
+    data = data.astype(float)
+
+    max_abs = np.max(np.abs(data))
+    if max_abs > 0:
+        data = data / max_abs
+
+    t = np.arange(len(data)) / fs_audio
+    return fs_audio, t, data
+
+
 def get_amplitude(X_fft, pos_idx, N):
     """Ambil amplitudo sisi frekuensi positif dan normalisasi."""
     return np.abs(X_fft[pos_idx]) * 2 / N
+
+
+def normalize_peak(x):
+    """Normalisasi peak ke kisaran sekitar [-1, 1]."""
+    max_abs = np.max(np.abs(x))
+    if max_abs == 0:
+        return x.copy()
+    return x / max_abs
+
+
+def normalize_zscore(x):
+    """Normalisasi z-score: (x - mean) / std."""
+    std = np.std(x)
+    if std == 0:
+        return x - np.mean(x)
+    return (x - np.mean(x)) / std
+
+
+def choose_time_view_window(x, view_samples, strategy="auto", start_sample=0):
+    """
+    Tentukan window sampel yang dipakai untuk plot domain waktu.
+
+    strategy:
+    - "start": ambil dari awal (atau dari start_sample)
+    - "peak": ambil area sekitar puncak |x|
+    - "auto": jika awal sinyal terlalu hening, pindah ke area puncak
+    """
+    N = len(x)
+    if N == 0:
+        return 0, 0
+
+    show_n = max(1, min(view_samples, N))
+
+    if strategy == "start":
+        start = max(0, min(int(start_sample), N - show_n))
+        return start, start + show_n
+
+    if strategy == "peak":
+        center = int(np.argmax(np.abs(x)))
+        start = max(0, min(center - (show_n // 2), N - show_n))
+        return start, start + show_n
+
+    # strategy == "auto"
+    first = x[:show_n]
+    overall_std = float(np.std(x))
+    first_std = float(np.std(first))
+    overall_peak = float(np.max(np.abs(x)))
+    first_peak = float(np.max(np.abs(first)))
+
+    # Jika bagian awal sangat kecil dibanding keseluruhan, ambil area puncak.
+    if overall_std > 0 and overall_peak > 0:
+        low_variance = first_std < (0.15 * overall_std)
+        low_peak = first_peak < (0.20 * overall_peak)
+        if low_variance and low_peak:
+            center = int(np.argmax(np.abs(x)))
+            start = max(0, min(center - (show_n // 2), N - show_n))
+            return start, start + show_n
+
+    return 0, show_n
+
+
+def build_operation_signals(N, kernel_len=41):
+    """
+    Buat sinyal uji dasar (impulse/step/ramp/ones/zeros) dan kernel operasi.
+
+    Definisi yang dipakai (diskrit):
+    - impulse : delta[n]
+    - step    : u[n]
+    - ramp    : n * u[n]
+
+    Kernel dibuat pendek agar konvolusi/korelasi tetap efisien untuk sinyal
+    panjang (mis. audio sampling tinggi).
+    """
+    if kernel_len % 2 == 0:
+        kernel_len += 1
+
+    n = np.arange(N) - (N // 2)
+
+    pointwise = {
+        "impulse": np.zeros(N),
+        "step": (n >= 0).astype(float),
+        "ramp": (n * (n >= 0)).astype(float),
+        "ones": np.ones(N),
+        "zeros": np.zeros(N),
+    }
+    pointwise["impulse"][N // 2] = 1.0
+
+    half_k = kernel_len // 2
+    n_k = np.arange(-half_k, half_k + 1)
+
+    kernels = {
+        "impulse": (n_k == 0).astype(float),
+        "step": (n_k >= 0).astype(float),
+        "ramp": (n_k * (n_k >= 0)).astype(float),
+        "ones": np.ones(kernel_len),
+        "zeros": np.zeros(kernel_len),
+    }
+
+    return {
+        "n": n,
+        "n_kernel": n_k,
+        "pointwise": pointwise,
+        "kernels": kernels,
+    }
+
+
+def compute_basic_operations(x):
+    """
+    Operasi dasar sinyal digital:
+    - penjumlahan
+    - perkalian
+    - konvolusi
+    - korelasi
+    - normalisasi
+    """
+    x = np.asarray(x, dtype=float)
+    N = len(x)
+    signals = build_operation_signals(N)
+
+    point = signals["pointwise"]
+    kernels = signals["kernels"]
+
+    # Penjumlahan: x + nilai tertentu (konstanta).
+    addition_constants = {
+        "minus_1": -1.0,
+        "minus_05": -0.5,
+        "plus_05": 0.5,
+        "plus_1": 1.0,
+    }
+    addition = {k: x + c for k, c in addition_constants.items()}
+
+    # Perkalian pointwise pakai sinyal standar.
+    use_keys = ["impulse", "ramp", "step", "ones"]
+    multiplication = {k: x * point[k] for k in use_keys}
+
+    # Konvolusi dan korelasi pakai kernel impulse/step/ramp/ones.
+    convolution = {k: np.convolve(x, kernels[k], mode="same") for k in use_keys}
+    correlation = {k: np.correlate(x, kernels[k], mode="same") for k in use_keys}
+    correlation["self"] = np.correlate(x, x, mode="same")
+
+    normalization = {
+        "peak": normalize_peak(x),
+        "zscore": normalize_zscore(x),
+    }
+
+    return {
+        "signals": signals,
+        "addition_constants": addition_constants,
+        "addition": addition,
+        "multiplication": multiplication,
+        "convolution": convolution,
+        "correlation": correlation,
+        "normalization": normalization,
+    }
 
 
 def analyze_signal(x, fs, clip_level=1.2, ma_window=20):
@@ -180,26 +371,43 @@ def save_or_show(fig, filename, output_dir=".", save_plots=True, show_plots=True
         plt.close(fig)
 
 
-def plot_time_domain(t, x, analysis, clip_level, ma_window, view_samples=500, output_dir=".", save_plots=True, show_plots=True):
+def plot_time_domain(
+    t,
+    x,
+    analysis,
+    clip_level,
+    ma_window,
+    view_samples=500,
+    time_view_strategy="auto",
+    view_start_sample=0,
+    output_dir=".",
+    save_plots=True,
+    show_plots=True,
+):
     """Plot (5a): domain waktu."""
     x_clipped = analysis["x_clipped"]
     x_power = analysis["x_power"]
     x_ma = analysis["x_ma"]
     rms_val = analysis["rms_val"]
 
-    show_n = min(view_samples, len(x))
+    start, end = choose_time_view_window(
+        x,
+        view_samples=view_samples,
+        strategy=time_view_strategy,
+        start_sample=view_start_sample,
+    )
 
     fig, axes = plt.subplots(4, 1, figsize=(12, 14))
     fig.suptitle("Analisa Kawasan Waktu", fontsize=14, fontweight="bold")
 
-    axes[0].plot(t[:show_n], x[:show_n], color="steelblue")
+    axes[0].plot(t[start:end], x[start:end], color="steelblue")
     axes[0].set_title("(i) Sinyal x[n] - Domain Waktu")
     axes[0].set_ylabel("Amplitudo")
 
-    axes[1].plot(t[:show_n], x[:show_n], label="Original", alpha=0.6)
+    axes[1].plot(t[start:end], x[start:end], label="Original", alpha=0.6)
     axes[1].plot(
-        t[:show_n],
-        x_clipped[:show_n],
+        t[start:end],
+        x_clipped[start:end],
         label=f"Clipped +/-{clip_level}",
         alpha=0.9,
         color="tomato",
@@ -210,7 +418,14 @@ def plot_time_domain(t, x, analysis, clip_level, ma_window, view_samples=500, ou
     axes[1].set_ylabel("Amplitudo")
     axes[1].legend(loc="upper right")
 
-    axes[2].fill_between(t[:show_n], 0, x_power[:show_n], color="orange", alpha=0.6, label="Daya sesaat")
+    axes[2].fill_between(
+        t[start:end],
+        0,
+        x_power[start:end],
+        color="orange",
+        alpha=0.6,
+        label="Daya sesaat",
+    )
     axes[2].axhline(
         rms_val**2,
         color="red",
@@ -221,14 +436,144 @@ def plot_time_domain(t, x, analysis, clip_level, ma_window, view_samples=500, ou
     axes[2].set_ylabel("Daya (amplitudo^2)")
     axes[2].legend(loc="upper right")
 
-    axes[3].plot(t[:show_n], x[:show_n], label="Original", alpha=0.4, color="steelblue")
-    axes[3].plot(t[:show_n], x_ma[:show_n], label=f"Moving Avg (M={ma_window})", color="darkblue", linewidth=2)
+    axes[3].plot(t[start:end], x[start:end], label="Original", alpha=0.4, color="steelblue")
+    axes[3].plot(
+        t[start:end],
+        x_ma[start:end],
+        label=f"Moving Avg (M={ma_window})",
+        color="darkblue",
+        linewidth=2,
+    )
     axes[3].set_title(f"(v) Konvolusi Moving Average (M={ma_window}) - Efek Low-pass")
     axes[3].set_ylabel("Amplitudo")
     axes[3].set_xlabel("Waktu (s)")
     axes[3].legend(loc="upper right")
 
     save_or_show(fig, "5a_time_domain.png", output_dir, save_plots, show_plots)
+
+
+def _plot_four_operation_panels(
+    axis_x,
+    data_dict,
+    keys,
+    pretty_name,
+    title,
+    filename,
+    view_samples=500,
+    output_dir=".",
+    save_plots=True,
+    show_plots=True,
+):
+    """Helper plot 4 subplot vertikal dengan area fokus sekitar n=0."""
+    total_n = len(axis_x)
+    show_n = min(view_samples, total_n)
+    start = max(0, (total_n // 2) - (show_n // 2))
+    end = start + show_n
+    x_view = axis_x[start:end]
+
+    fig, axes = plt.subplots(4, 1, figsize=(12, 12))
+    fig.suptitle(title, fontsize=13, fontweight="bold")
+
+    for ax, key in zip(axes, keys):
+        ax.plot(x_view, data_dict[key][start:end])
+        ax.set_title(f"Operand: {pretty_name[key]}")
+        ax.set_ylabel("Amplitudo")
+
+    axes[-1].set_xlabel("n (sample)")
+    save_or_show(fig, filename, output_dir, save_plots, show_plots)
+
+
+def plot_addition_operations(axis_n, basic_ops, view_samples=500, output_dir=".", save_plots=True, show_plots=True):
+    """Plot hasil penjumlahan x dengan konstanta tertentu."""
+    _plot_four_operation_panels(
+        axis_n,
+        basic_ops["addition"],
+        keys=["minus_1", "minus_05", "plus_05", "plus_1"],
+        pretty_name={
+            "minus_1": "x + (-1.0)",
+            "minus_05": "x + (-0.5)",
+            "plus_05": "x + 0.5",
+            "plus_1": "x + 1.0",
+        },
+        title="Operasi Penjumlahan Sinyal",
+        filename="5a_ops_addition.png",
+        view_samples=view_samples,
+        output_dir=output_dir,
+        save_plots=save_plots,
+        show_plots=show_plots,
+    )
+
+
+def plot_multiplication_operations(axis_n, basic_ops, view_samples=500, output_dir=".", save_plots=True, show_plots=True):
+    """Plot hasil perkalian x dengan impulse/ramp/step/ones."""
+    _plot_four_operation_panels(
+        axis_n,
+        basic_ops["multiplication"],
+        keys=["impulse", "ramp", "step", "ones"],
+        pretty_name={
+            "impulse": "Impulse",
+            "ramp": "Ramp = n*u[n]",
+            "step": "Step = u[n]",
+            "ones": "Konstan 1",
+        },
+        title="Operasi Perkalian Sinyal",
+        filename="5a_ops_multiplication.png",
+        view_samples=view_samples,
+        output_dir=output_dir,
+        save_plots=save_plots,
+        show_plots=show_plots,
+    )
+
+
+def plot_convolution_operations(axis_n, basic_ops, view_samples=500, output_dir=".", save_plots=True, show_plots=True):
+    """Plot hasil konvolusi x dengan kernel impulse/ramp/step/ones."""
+    _plot_four_operation_panels(
+        axis_n,
+        basic_ops["convolution"],
+        keys=["impulse", "ramp", "step", "ones"],
+        pretty_name={
+            "impulse": "Kernel Impulse",
+            "ramp": "Kernel Ramp = n*u[n]",
+            "step": "Kernel Step = u[n]",
+            "ones": "Kernel Konstan 1",
+        },
+        title="Operasi Konvolusi Sinyal",
+        filename="5a_ops_convolution.png",
+        view_samples=view_samples,
+        output_dir=output_dir,
+        save_plots=save_plots,
+        show_plots=show_plots,
+    )
+
+
+def plot_correlation_and_normalization(axis_n, basic_ops, view_samples=500, output_dir=".", save_plots=True, show_plots=True):
+    """Plot representatif untuk korelasi dan normalisasi."""
+    total_n = len(axis_n)
+    show_n = min(view_samples, total_n)
+    start = max(0, (total_n // 2) - (show_n // 2))
+    end = start + show_n
+    n_view = axis_n[start:end]
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    fig.suptitle("Operasi Korelasi dan Normalisasi", fontsize=13, fontweight="bold")
+
+    axes[0, 0].plot(n_view, basic_ops["correlation"]["impulse"][start:end], color="steelblue")
+    axes[0, 0].set_title("Korelasi dengan Kernel Impulse")
+    axes[0, 0].set_ylabel("Nilai")
+
+    axes[0, 1].plot(n_view, basic_ops["correlation"]["self"][start:end], color="tomato")
+    axes[0, 1].set_title("Auto-korelasi (x dikorelasikan dengan x)")
+
+    axes[1, 0].plot(n_view, basic_ops["normalization"]["peak"][start:end], color="purple")
+    axes[1, 0].set_title("Normalisasi Peak")
+    axes[1, 0].set_xlabel("n (sample)")
+    axes[1, 0].set_ylabel("Amplitudo")
+
+    axes[1, 1].plot(n_view, basic_ops["normalization"]["zscore"][start:end], color="green")
+    axes[1, 1].set_title("Normalisasi Z-Score")
+    axes[1, 1].set_xlabel("n (sample)")
+
+    save_or_show(fig, "5a_ops_corr_norm.png", output_dir, save_plots, show_plots)
 
 
 def plot_amp_energy(analysis, f_targets, output_dir=".", save_plots=True, show_plots=True):
@@ -481,6 +826,7 @@ def run_full_analysis(
         clip_level=cfg["clip_level"],
         ma_window=cfg["ma_window"],
     )
+    basic_ops = compute_basic_operations(x)
 
     if verbose:
         print(f"RMS sinyal    : {analysis['rms_val']:.4f}")
@@ -502,11 +848,63 @@ def run_full_analysis(
         analysis,
         clip_level=cfg["clip_level"],
         ma_window=cfg["ma_window"],
+        view_samples=max(cfg["view_samples"], int(0.05 * fs)),
+        time_view_strategy=cfg["time_view_strategy"],
+        view_start_sample=cfg["view_start_sample"],
+        output_dir=output_dir,
+        save_plots=save_plots,
+        show_plots=show_plots,
+    )
+
+    axis_n = basic_ops["signals"]["n"]
+
+    plot_addition_operations(
+        axis_n,
+        basic_ops,
         view_samples=cfg["view_samples"],
         output_dir=output_dir,
         save_plots=save_plots,
         show_plots=show_plots,
     )
+
+    plot_multiplication_operations(
+        axis_n,
+        basic_ops,
+        view_samples=cfg["view_samples"],
+        output_dir=output_dir,
+        save_plots=save_plots,
+        show_plots=show_plots,
+    )
+
+    plot_convolution_operations(
+        axis_n,
+        basic_ops,
+        view_samples=cfg["view_samples"],
+        output_dir=output_dir,
+        save_plots=save_plots,
+        show_plots=show_plots,
+    )
+
+    plot_correlation_and_normalization(
+        axis_n,
+        basic_ops,
+        view_samples=cfg["view_samples"],
+        output_dir=output_dir,
+        save_plots=save_plots,
+        show_plots=show_plots,
+    )
+
+    if verbose:
+        add_zero_err = np.max(np.abs((x + 0.0) - x))
+        mul_one_err = np.max(np.abs((x * basic_ops["signals"]["pointwise"]["ones"]) - x))
+        print("\n--- Operasi Dasar Sinyal Digital ---")
+        print("Penjumlahan  : x + konstanta tertentu")
+        print("Perkalian    : x * impulse/ramp/step/1")
+        print("Konvolusi    : x dikonvolusi kernel impulse/ramp/step/1")
+        print("Korelasi     : x dikorelasikan kernel impulse/ramp/step/1")
+        print("Normalisasi  : peak dan z-score")
+        print(f"Cek identitas x + 0: max error = {add_zero_err:.2e}")
+        print(f"Cek identitas x * 1: max error = {mul_one_err:.2e}")
 
     plot_amp_energy(
         analysis,
@@ -586,6 +984,10 @@ def run_full_analysis(
         print("\n" + "=" * 50)
         print("RINGKASAN OUTPUT FILE:")
         print("  5a_time_domain.png      - Plot kawasan waktu (5a-i s/d v)")
+        print("  5a_ops_addition.png     - Operasi penjumlahan (4 subplot)")
+        print("  5a_ops_multiplication.png - Operasi perkalian (4 subplot)")
+        print("  5a_ops_convolution.png  - Operasi konvolusi (4 subplot)")
+        print("  5a_ops_corr_norm.png    - Korelasi & normalisasi")
         print("  5b_i_amp_energy.png     - Spektrum amplitudo & energi")
         print("  5b_ii_real_imag.png     - Komponen Re, Im, Phase")
         print("  5b_iii_windowing.png    - Perbandingan 4 window")
@@ -599,6 +1001,7 @@ def run_full_analysis(
         "time": t,
         "signal": x,
         "signal_clean": x_clean,
+        "basic_operations": basic_ops,
         "analysis": analysis,
         "components": comps,
         "similarity": similarity,
@@ -621,6 +1024,34 @@ def run_full_analysis_from_wav(
         config=config,
         signal=x_wav,
         fs=fs_wav,
+        show_plots=show_plots,
+        save_plots=save_plots,
+        output_dir=output_dir,
+        verbose=verbose,
+    )
+
+
+def run_full_analysis_from_audio(
+    file_path,
+    config=None,
+    target_fs=None,
+    show_plots=True,
+    save_plots=True,
+    output_dir=".",
+    verbose=True,
+):
+    """
+    Shortcut analisa full langsung dari file audio (wav/mp3/aac/dll).
+
+    target_fs:
+    - None  -> pakai fs asli file
+    - angka -> resample ke fs tersebut (via librosa)
+    """
+    fs_audio, _, x_audio = load_audio_signal(file_path, target_fs=target_fs)
+    return run_full_analysis(
+        config=config,
+        signal=x_audio,
+        fs=fs_audio,
         show_plots=show_plots,
         save_plots=save_plots,
         output_dir=output_dir,

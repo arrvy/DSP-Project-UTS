@@ -17,7 +17,7 @@ import src.references as ref
 
 def run_analysis_by_source(
     input_source,
-    wav_path,
+    audio_path,
     config,
     show_plots,
     save_plots,
@@ -36,14 +36,14 @@ def run_analysis_by_source(
             verbose=verbose,
         )
 
-    if source == "wav":
-        if not wav_path:
-            raise ValueError("Mode wav butuh parameter wav_path.")
-        if not os.path.exists(wav_path):
-            raise FileNotFoundError(f"File WAV tidak ditemukan: {wav_path}")
+    if source in ("audio", "wav", "mp3", "aac"):
+        if not audio_path:
+            raise ValueError("Mode audio butuh parameter audio_path.")
+        if not os.path.exists(audio_path):
+            raise FileNotFoundError(f"File audio tidak ditemukan: {audio_path}")
 
-        return ref.run_full_analysis_from_wav(
-            file_path=wav_path,
+        return ref.run_full_analysis_from_audio(
+            file_path=audio_path,
             config=config,
             show_plots=show_plots,
             save_plots=save_plots,
@@ -51,12 +51,12 @@ def run_analysis_by_source(
             verbose=verbose,
         )
 
-    raise ValueError("input_source harus 'synthetic' atau 'wav'.")
+    raise ValueError("input_source harus 'synthetic' atau 'audio'.")
 
 
 def main(
     input_source="synthetic",
-    wav_path=None,
+    audio_path=None,
     config_overrides=None,
     show_plots=True,
     save_plots=False,
@@ -68,7 +68,7 @@ def main(
 
     input_source:
     - "synthetic" -> generate sinyal sintetik
-    - "wav"       -> load WAV dan otomatis pakai fs file
+    - "audio"     -> load WAV/MP3/AAC dan otomatis pakai fs file
     """
     config = ref.get_default_config()
     if config_overrides:
@@ -78,7 +78,7 @@ def main(
 
     result = run_analysis_by_source(
         input_source=input_source,
-        wav_path=wav_path,
+        audio_path=audio_path,
         config=config,
         show_plots=show_plots,
         save_plots=save_plots,
@@ -91,21 +91,27 @@ def main(
 
 
 if __name__ == "__main__":
-    # Ganti ke "wav" jika ingin analisa dari file WAV.
-    INPUT_SOURCE = "synthetic"
+    # Ganti ke "audio" jika ingin analisa dari file WAV/MP3/AAC., "synthetic" jika mau menggunakan sound/data bawaan
+    INPUT_SOURCE = "audio"
 
-    # Isi path jika INPUT_SOURCE = "wav".
-    WAV_PATH = os.path.join("references", "garpu_tala_440hz.wav")
+    # Isi path jika INPUT_SOURCE = "audio".
+    # Contoh: os.path.join("references", "garpu_tala_440hz.wav")
+    # Contoh: os.path.join("references", "contoh.mp3")
+    # Contoh: os.path.join("references", "contoh.aac")
+    AUDIO_PATH = os.path.join("assets", "67 sound.mp3")
 
     # Override config jika perlu (contoh: {"duration": 2.0, "ma_window": 50})
     CONFIG_OVERRIDES = None
 
+        
+
     main(
+        
         input_source=INPUT_SOURCE,
-        wav_path=WAV_PATH,
+        audio_path=AUDIO_PATH,
         config_overrides=CONFIG_OVERRIDES,
         show_plots=True,
-        save_plots=False,
-        output_dir=".",
+        save_plots=True,
+        output_dir="./assets/image",
         verbose=True,
     )
