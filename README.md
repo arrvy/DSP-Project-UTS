@@ -1,5 +1,10 @@
 # DSP-Project-UTS
 
+NAMA :
+1. Aulia Firmansyah (H1A024081)
+2. Nashr Ardy Wahyono (H1A024087)
+3. Hariri Febrianto Arkansyah (H1A024137)
+
 Project dasar Digital Signal Processing (DSP) untuk UTS.
 
 Fokus project:

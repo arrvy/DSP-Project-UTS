@@ -92,7 +92,7 @@ def main(
 
 if __name__ == "__main__":
     # Ganti ke "audio" jika ingin analisa dari file WAV/MP3/AAC., "synthetic" jika mau menggunakan sound/data bawaan
-    INPUT_SOURCE = "audio"
+    INPUT_SOURCE = "synthetic"
 
     # Isi path jika INPUT_SOURCE = "audio".
     # Contoh: os.path.join("references", "garpu_tala_440hz.wav")
